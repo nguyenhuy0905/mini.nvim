@@ -2714,7 +2714,12 @@ H.actions = {
   end,
 
   toggle_preview = function(picker, _)
-    if picker.view_state == 'preview' then return H.picker_show_main(picker) end
+    if picker.view_state == 'preview' then
+        if H.image then
+            H.image:clear()
+        end
+        return H.picker_show_main(picker)
+    end
     H.picker_show_preview(picker)
   end,
 
@@ -3247,11 +3252,28 @@ H.get_fs_type = function(path)
   return 'none'
 end
 
+-- Save the current image
+H.image = nil
 -- Default preview ------------------------------------------------------------
 H.preview_file = function(buf_id, item_data, opts)
   -- Fully preview only accessible text files
   local is_text = H.is_file_text(item_data.path)
-  if not is_text then return H.set_buflines(buf_id, { is_text == nil and '-No-access-' or '-Non-text-file-' }) end
+  -- check if file is image
+  if not is_text then
+    local win_id = vim.fn.bufwinid(buf_id)
+    local pos = vim.api.nvim_win_get_position(win_id)
+    local has_image = pcall(require, 'image')
+    if not has_image then return H.set_buflines(buf_id, { is_text == nil and '-No-access-' or '-Non-text-file-' }) end
+    H.image = require('image').from_file(item_data.path, {
+      buffer = buf_id,
+      width = vim.fn.winwidth(win_id),
+      height = vim.fn.winheight(win_id),
+    })
+    if not H.image then return H.set_buflines(buf_id, { is_text == nil and '-No-access-' or '-Non-text-file-' }) end
+    H.image:move(pos[2] + 1, pos[1] + 1)
+    H.image:render()
+    return
+  end
 
   -- Compute lines. Limit number of read lines to work better on large files.
   local has_lines, lines = pcall(vim.fn.readfile, item_data.path, '', (item_data.lnum or 1) + opts.n_context_lines)
