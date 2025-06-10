@@ -1272,10 +1272,16 @@ H.latest_paths = {}
 -- - <children_path_ids> - array of shown children path ids.
 -- - <win_id> - id of window this buffer is shown. Can be `nil`.
 -- - <n_modified> - number of modifications since last update from this module.
+-- - <image> - image info:
+--   - <handler> - image handler returned by image.nvim.
+--   - <geometry> - geometry to pass to <handler>:render. If nil then it's
+--     indeterminate state.
 --   Values bigger than 0 can be treated as if buffer was modified by user.
 --   It uses number instead of boolean to overcome `TextChanged` event on
 --   initial `buf_set_lines` (`noautocmd` doesn't quick work for this event).
 H.opened_buffers = {}
+local img = nil
+if pcall(require, 'image') then img = require('image') end
 
 -- File system information
 H.is_windows = vim.loop.os_uname().sysname == 'Windows_NT'
@@ -1496,6 +1502,7 @@ H.explorer_refresh = function(explorer, opts)
     -- NOTE: window can be invalid if it was showing buffer that was deleted
     if H.is_valid_win(win_id) then
       local buf_id = vim.api.nvim_win_get_buf(win_id)
+      if H.opened_buffers[buf_id].image then H.opened_buffers[buf_id].image.handler:clear() end
       H.opened_buffers[buf_id].win_id = nil
     end
   end
@@ -1763,7 +1770,8 @@ H.explorer_refresh_depth_window = function(explorer, depth, win_count, win_col)
   -- Create relevant window config
   local config = {
     col = win_col,
-    height = vim.api.nvim_buf_line_count(view.buf_id),
+    -- very inflexible but at least it renders the image
+    height = H.opened_buffers[view.buf_id].image and cur_width or vim.api.nvim_buf_line_count(view.buf_id),
     width = cur_width,
     -- Use shortened full path in left most window
     title = win_count == 1 and H.fs_shorten_path(H.fs_full_path(path)) or H.fs_get_basename(path),
@@ -1779,6 +1787,17 @@ H.explorer_refresh_depth_window = function(explorer, depth, win_count, win_col)
   end
 
   H.window_update(win_id, config)
+  if H.opened_buffers[view.buf_id].image then
+    local pos = vim.api.nvim_win_get_position(win_id)
+    local geometry = {
+      x = pos[2] + 1,
+      y = pos[1] + 1,
+      width = vim.api.nvim_win_get_width(win_id),
+      -- height = vim.api.nvim_win_get_width(win_id),
+    }
+    H.opened_buffers[view.buf_id].image.geometry = geometry
+    H.opened_buffers[view.buf_id].image.handler:render(geometry)
+  end
 
   -- Show view in window
   H.window_set_view(win_id, view)
@@ -2102,6 +2121,16 @@ H.buffer_create = function(path, mappings)
 
   -- Register buffer
   H.opened_buffers[buf_id] = { path = path }
+  -- Register image handler if any
+  if img then
+    local handler = img.from_file(path, {
+      buffer = buf_id,
+    })
+    if handler then H.opened_buffers[buf_id].image = {
+      handler = handler,
+      geometry = nil,
+    } end
+  end
 
   -- Make buffer mappings
   H.buffer_make_mappings(buf_id, mappings)
@@ -2216,6 +2245,7 @@ H.buffer_make_mappings = function(buf_id, mappings)
   --stylua: ignore end
 end
 
+local nilw = 1
 H.buffer_update = function(buf_id, path, opts, is_preview)
   if not (H.is_valid_buf(buf_id) and H.fs_is_present_path(path)) then return end
 
@@ -2287,7 +2317,10 @@ H.buffer_update_file = function(buf_id, path, opts, _)
   if fd == nil then return H.set_buflines(buf_id, { '-No-access' .. string.rep('-', width_preview) }) end
   local is_text = vim.loop.fs_read(fd, 1024):find('\0') == nil
   vim.loop.fs_close(fd)
-  if not is_text then return H.set_buflines(buf_id, { '-Non-text-file' .. string.rep('-', width_preview) }) end
+  if not is_text then
+    if H.opened_buffers[buf_id].image then return end
+    return H.set_buflines(buf_id, { '-Non-text-file' .. string.rep('-', width_preview) })
+  end
 
   -- Compute lines. Limit number of read lines to work better on large files.
   local has_lines, read_res = pcall(vim.fn.readfile, path, '', vim.o.lines)
@@ -2477,6 +2510,7 @@ H.window_close = function(win_id)
   if win_id == nil then return end
   local has_buffer, buf_id = pcall(vim.api.nvim_win_get_buf, win_id)
   if has_buffer then H.opened_buffers[buf_id].win_id = nil end
+  if H.opened_buffers[buf_id].image then H.opened_buffers[buf_id].image.handler:clear() end
   pcall(vim.api.nvim_win_close, win_id, true)
 end
 
